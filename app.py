@@ -1038,12 +1038,17 @@ def stock_request_list():
     cursor.close()
     return render_template('stock_request_list.html', requests=requests)
 
-
 @app.route('/report')
 def report():
     cursor = conn.cursor()
 
-    # Query yang sama seperti di fungsi inventory_data
+    # Ambil parameter filter dari query string
+    product_name = request.args.get('product_name', '').lower()
+    supplier_name = request.args.get('supplier_name', '').lower()
+    date_from = request.args.get('date_from', '')
+    date_to = request.args.get('date_to', '')
+
+    # Base query
     base_query = """
         WITH stock_out_agg AS (
             SELECT 
@@ -1082,43 +1087,49 @@ def report():
             stock_in_agg si ON p.product_id = si.product_id
         LEFT JOIN 
             stock_out_agg so ON p.product_id = so.product_id
-        ORDER BY 
-            p.product_name ASC
     """
-    cursor.execute(base_query)
-    rows = cursor.fetchall()
+
+    # Tambahkan kondisi berdasarkan filter
+    conditions = []
+    params = {}
+
+    if product_name:
+        conditions.append("LOWER(p.product_name) LIKE :product_name")
+        params["product_name"] = f"%{product_name}%"
+
+    if supplier_name:
+        conditions.append("LOWER(s.supp_name) LIKE :supplier_name")
+        params["supplier_name"] = f"%{supplier_name}%"
+
+    if date_from:
+        conditions.append("EXISTS (SELECT 1 FROM stock_in WHERE stock_in.product_id = p.product_id AND stock_in_date >= TO_DATE(:date_from, 'YYYY-MM-DD'))")
+        params["date_from"] = date_from
+
+    if date_to:
+        conditions.append("EXISTS (SELECT 1 FROM stock_in WHERE stock_in.product_id = p.product_id AND stock_in_date <= TO_DATE(:date_to, 'YYYY-MM-DD'))")
+        params["date_to"] = date_to
+
+    # Gabungkan kondisi ke query
+    if conditions:
+        base_query += " WHERE " + " AND ".join(conditions)
+
+    base_query += " ORDER BY p.product_name ASC"
+
+    # Eksekusi query
+    cursor.execute(base_query, params)
+    inventorys = [{
+        "product_id": row[0],
+        "product_name": row[1],
+        "supp_name": row[2],
+        "manu_name": row[3],
+        "stock_in": row[4],
+        "stock_out": row[5],
+        "current_stock": row[6],
+        "safety_level": row[7]
+    } for row in cursor.fetchall()]
     cursor.close()
 
-    # Membuat workbook baru
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Inventory Data"
-
-    # Menambahkan header
-    headers = [
-        "Product ID", "Product Name", "Supplier Name", 
-        "Manufacturer Name", "Stock In", "Stock Out", 
-        "Current Stock", "Safety Level"
-    ]
-    ws.append(headers)
-
-    # Menambahkan data ke Excel
-    for row in rows:
-        ws.append(row)
-
-    # Simpan ke file buffer
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
-
-    # Kirim file Excel sebagai respons
-    return send_file(
-        output,
-        as_attachment=True,
-        download_name="inventory_data.xlsx",
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
+    return render_template('report.html', inventorys=inventorys)
 
 if __name__ == "__main__":
     #app.run(debug=True)
